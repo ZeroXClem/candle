@@ -171,7 +171,7 @@ impl Shape {
         }
         let mut acc = 1;
         for (&stride, &dim) in stride.iter().zip(self.0.iter()).rev() {
-            if stride != acc {
+            if dim > 1 && stride != acc {
                 return false;
             }
             acc *= dim;
@@ -186,7 +186,7 @@ impl Shape {
         }
         let mut acc = 1;
         for (&stride, &dim) in stride.iter().zip(self.0.iter()) {
-            if stride != acc {
+            if dim > 1 && stride != acc {
                 return false;
             }
             acc *= dim;
@@ -478,23 +478,6 @@ extract_dims!(
     (usize, usize, usize, usize, usize)
 );
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stride() {
-        let shape = Shape::from(());
-        assert_eq!(shape.stride_contiguous(), Vec::<usize>::new());
-        let shape = Shape::from(42);
-        assert_eq!(shape.stride_contiguous(), [1]);
-        let shape = Shape::from((42, 1337));
-        assert_eq!(shape.stride_contiguous(), [1337, 1]);
-        let shape = Shape::from((299, 792, 458));
-        assert_eq!(shape.stride_contiguous(), [458 * 792, 458, 1]);
-    }
-}
-
 pub trait ShapeWithOneHole {
     fn into_shape(self, el_count: usize) -> Result<Shape>;
 }
@@ -625,5 +608,22 @@ impl ShapeWithOneHole for (usize, usize, usize, usize, ()) {
         let (d1, d2, d3, d4, ()) = self;
         let d = hole_size(el_count, d1 * d2 * d3 * d4, &self)?;
         Ok((d1, d2, d3, d4, d).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stride() {
+        let shape = Shape::from(());
+        assert_eq!(shape.stride_contiguous(), Vec::<usize>::new());
+        let shape = Shape::from(42);
+        assert_eq!(shape.stride_contiguous(), [1]);
+        let shape = Shape::from((42, 1337));
+        assert_eq!(shape.stride_contiguous(), [1337, 1]);
+        let shape = Shape::from((299, 792, 458));
+        assert_eq!(shape.stride_contiguous(), [458 * 792, 458, 1]);
     }
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::approx_constant)]
 use anyhow::{Context, Result};
 use candle_core::{test_device, test_utils, Device, Shape, Tensor, Var};
 
@@ -96,24 +97,24 @@ fn unary_grad(device: &Device) -> Result<()> {
     let grads = y.backward()?;
     let grad_x = grads.get(x).context("no grad for x")?;
     assert_eq!(
-        y.to_vec1::<f32>()?,
-        [20.085537, 2.7182817, 54.59815, 1.1618342]
+        test_utils::to_vec1_round(&y, 4)?,
+        [20.0855, 2.7183, 54.5982, 1.1618]
     );
     assert_eq!(
-        grad_x.to_vec1::<f32>()?,
-        [20.085537, 2.7182817, 54.59815, 1.1618342]
+        test_utils::to_vec1_round(grad_x, 4)?,
+        [20.0855, 2.7183, 54.5982, 1.1618]
     );
     let y = x.exp()?.sqr()?;
     let grads = y.backward()?;
     let grad_x = grads.get(x).context("no grad for x")?;
     assert_eq!(
-        y.to_vec1::<f32>()?,
-        [403.4288, 7.3890557, 2980.9578, 1.3498588]
+        test_utils::to_vec1_round(&y, 3)?,
+        [403.429, 7.389, 2980.958, 1.35]
     );
     // exp(x)^2 = exp(2*x)
     assert_eq!(
-        grad_x.to_vec1::<f32>()?,
-        [806.8576, 14.778111, 5961.9155, 2.6997175]
+        test_utils::to_vec1_round(grad_x, 2)?,
+        [806.86, 14.78, 5961.92, 2.7]
     );
     let y = x.sin()?;
     let grads = y.backward()?;
@@ -261,6 +262,7 @@ fn unary_grad(device: &Device) -> Result<()> {
     let y = elu_x.elu(2.)?;
     let grads = y.backward()?;
     let grad_x = grads.get(&elu_x).context("no grad for x")?;
+
     assert_eq!(
         test_utils::to_vec1_round(&y, 4)?,
         [-1.2642, 0.0000, -1.7293, 3.0000]
@@ -270,6 +272,194 @@ fn unary_grad(device: &Device) -> Result<()> {
         [0.7358, 2.0000, 0.2707, 1.0000]
     );
 
+    // testing compared to pytorch nn.Silu()
+    let y = x.silu()?;
+    let grads = y.backward()?;
+    let grad_x = grads.get(&x).context("no grad for x")?;
+    assert_eq!(
+        test_utils::to_vec1_round(&y, 4)?,
+        [2.8577, 0.7311, 3.9281, 0.0806]
+    );
+    assert_eq!(
+        test_utils::to_vec1_round(grad_x, 4)?,
+        [1.0881, 0.9277, 1.0527, 0.5747],
+    );
+
+    if device.is_cpu() {
+        let x = Var::new(&[[[1f32, 2., 3.], [4., 5., 6.], [7., 8., 9.]]], device)?;
+        let y = x.interpolate1d(12)?.reshape(36)?;
+
+        let z = Tensor::new(
+            &[
+                1_f32, 02., 03., 04., 05., 06., 07., 08., 09., 10., 11., 12., 13., 14., 15., 16.,
+                17., 18., 19., 20., 21., 22., 23., 24., 25., 26., 27., 28., 29., 30., 31., 32.,
+                33., 34., 35., 36.,
+            ],
+            device,
+        )?;
+
+        let loss = y.unsqueeze(1)?.transpose(0, 1)?.matmul(&z.unsqueeze(1)?)?;
+        let grads = loss.backward()?;
+        let grad_x = grads.get(&x).context("no grad for x")?;
+
+        assert_eq!(
+            test_utils::to_vec3_round(grad_x, 4)?,
+            [[[10_f32, 26., 42.], [58., 74., 90.], [106., 122., 138.]]]
+        );
+    }
+
+    // manually checked: see comments
+    let x = Var::new(&[[[[1f32, 2., 3.], [4., 5., 6.], [7., 8., 9.]]]], device)?;
+    let y = x.interpolate2d(6, 6)?.reshape(36)?;
+
+    let z = Tensor::new(
+        &[
+            1_f32, 02., 03., 04., 05., 06., 07., 08., 09., 10., 11., 12., 13., 14., 15., 16., 17.,
+            18., 19., 20., 21., 22., 23., 24., 25., 26., 27., 28., 29., 30., 31., 32., 33., 34.,
+            35., 36.,
+        ],
+        device,
+    )?;
+    // gradient should be
+    // row 1
+    // 1+2+7+8 = 18
+    // 3+4+9+10 = 26
+    // 5+6+11+12 = 34
+    // row 2
+    // 13+14+19+20 = 66
+    // 15+16+21+22 = 74
+    // 17+18+23+24 = 82
+    // row 3
+    // 25+26+31+32 = 114
+    // 27+28+33+34 = 122
+    // 29+30+35+36 = 130
+    let loss = y.unsqueeze(1)?.transpose(0, 1)?.matmul(&z.unsqueeze(1)?)?;
+
+    let grads = loss.backward()?;
+
+    let grad_x = grads.get(&x).context("no grad for x")?;
+    assert_eq!(
+        test_utils::to_vec2_round(&grad_x.flatten(0, 2)?, 4)?,
+        [[18_f32, 26., 34.], [66., 74., 82.], [114., 122., 130.]]
+    );
+
+    // manually checked: see comments
+    let x = Var::new(&[[[[1f32, 2.], [4., 5.]]]], device)?;
+    let y = x.interpolate2d(6, 6)?.reshape(36)?;
+
+    let z = Tensor::new(
+        &[
+            1_f32, 02., 03., 04., 05., 06., 07., 08., 09., 10., 11., 12., 13., 14., 15., 16., 17.,
+            18., 19., 20., 21., 22., 23., 24., 25., 26., 27., 28., 29., 30., 31., 32., 33., 34.,
+            35., 36.,
+        ],
+        device,
+    )?;
+    // gradient should be
+    // row 1
+    // 1+2+3+7+8+9+13+14+15 = 72
+    // 4+5+6+10+11+12+16+17+18 = 99
+    // row 2
+    // 19+20+21+25+26+27+31+32+33 = 234
+    // 22+23+24+28+29+30+34+35+36 = 243
+    let loss = y.unsqueeze(1)?.transpose(0, 1)?.matmul(&z.unsqueeze(1)?)?;
+
+    let grads = loss.backward()?;
+
+    let grad_x = grads.get(&x).context("no grad for x")?;
+    assert_eq!(
+        test_utils::to_vec2_round(&grad_x.flatten(0, 2)?, 4)?,
+        [[72_f32, 99.], [234., 261.]]
+    );
+
+    // manually checked: see comments
+    let x = Var::new(&[[[[1f32, 2.], [4., 5.]], [[6f32, 7.], [8., 9.]]]], device)?;
+
+    let y = x.interpolate2d(4, 4)?.reshape(32)?;
+
+    #[rustfmt::skip]
+    let z = Tensor::new(
+        &[
+            1_f32, 02., 03., 04.,
+            05.,   06., 07., 08.,
+            09.,   10., 11., 12.,
+            13.,   14., 15., 16.,
+            17.,   18., 19., 20.,
+            21.,   22., 23., 24.,
+            25.,   26., 27., 28.,
+            29.,   30., 31., 32.
+        ],
+        device,
+    )?;
+    // gradient should be
+    // m1r1
+    // 1+2+5+6=14
+    // 3+4+7+8=22
+    // m1r2
+    // 9+10+13+14=46
+    // 11+12+15+16=54
+    // m2r1
+    // 17+18+21+22=78
+    // 19+20+23+24=86
+    // m2r2
+    // 25+26+29+30=110
+    // 27+28+31+32=118
+    let loss = y.unsqueeze(1)?.transpose(0, 1)?.matmul(&z.unsqueeze(1)?)?;
+
+    let grads = loss.backward()?;
+
+    let grad_x = grads.get(&x).context("no grad for x")?;
+
+    assert_eq!(
+        test_utils::to_vec3_round(&grad_x.flatten(0, 1)?, 4)?,
+        [[[14_f32, 22.], [46., 54.]], [[78., 86.], [110., 118.]]]
+    );
+
+    // manually checked: see comments
+    let x = Var::new(
+        &[[[[1f32, 2.], [4., 5.]]], [[[6f32, 7.], [8., 9.]]]],
+        device,
+    )?;
+
+    let y = x.interpolate2d(4, 4)?.reshape(32)?;
+
+    #[rustfmt::skip]
+       let z = Tensor::new(
+           &[
+               1_f32, 02., 03., 04.,
+               05.,   06., 07., 08.,
+               09.,   10., 11., 12.,
+               13.,   14., 15., 16.,
+               17.,   18., 19., 20.,
+               21.,   22., 23., 24.,
+               25.,   26., 27., 28.,
+               29.,   30., 31., 32.
+           ],
+           device,
+       )?;
+    // gradient should be
+    // m1r1
+    // 1+2+5+6=14
+    // 3+4+7+8=22
+    // m1r2
+    // 9+10+13+14=46
+    // 11+12+15+16=54
+    // m2r1
+    // 17+18+21+22=78
+    // 19+20+23+24=86
+    // m2r2
+    // 25+26+29+30=110
+    // 27+28+31+32=118
+    let loss = y.unsqueeze(1)?.transpose(0, 1)?.matmul(&z.unsqueeze(1)?)?;
+
+    let grads = loss.backward()?;
+
+    let grad_x = grads.get(&x).context("no grad for x")?;
+
+    assert_eq!(
+        test_utils::to_vec3_round(&grad_x.flatten(0, 1)?, 4)?,
+        [[[14_f32, 22.], [46., 54.]], [[78., 86.], [110., 118.]]]
+    );
     Ok(())
 }
 
@@ -315,9 +505,29 @@ fn binary_grad(device: &Device) -> Result<()> {
     Ok(())
 }
 
-test_device!(simple_grad, simple_grad_cpu, simple_grad_gpu);
-test_device!(sum_grad, sum_grad_cpu, sum_grad_gpu);
-test_device!(matmul_grad, matmul_grad_cpu, matmul_grad_gpu);
-test_device!(grad_descent, grad_descent_cpu, grad_descent_gpu);
-test_device!(unary_grad, unary_grad_cpu, unary_grad_gpu);
-test_device!(binary_grad, binary_grad_cpu, binary_grad_gpu);
+test_device!(
+    simple_grad,
+    simple_grad_cpu,
+    simple_grad_gpu,
+    simple_grad_metal
+);
+test_device!(sum_grad, sum_grad_cpu, sum_grad_gpu, sum_grad_metal);
+test_device!(
+    matmul_grad,
+    matmul_grad_cpu,
+    matmul_grad_gpu,
+    matmul_grad_metal
+);
+test_device!(
+    grad_descent,
+    grad_descent_cpu,
+    grad_descent_gpu,
+    grad_descent_metal
+);
+test_device!(unary_grad, unary_grad_cpu, unary_grad_gpu, unary_grad_metal);
+test_device!(
+    binary_grad,
+    binary_grad_cpu,
+    binary_grad_gpu,
+    binary_grad_metal
+);

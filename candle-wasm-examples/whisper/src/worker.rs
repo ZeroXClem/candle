@@ -315,6 +315,7 @@ impl Decoder {
         let model = if md.quantized {
             let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf_buffer(
                 &md.weights,
+                &device,
             )?;
             Model::Quantized(m::quantized_model::Whisper::load(&vb, config)?)
         } else {
@@ -414,7 +415,7 @@ pub enum Task {
 }
 
 // Communication to the worker happens through bincode, the model weights and configs are fetched
-// on the main thread and transfered via the following structure.
+// on the main thread and transferred via the following structure.
 #[derive(Serialize, Deserialize)]
 pub struct ModelData {
     pub weights: Vec<u8>,
